@@ -1,0 +1,520 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Harden Image with IIS and required software installed for WebApp servers.
+Metadata: # Metadata section to include arbitrary JSON or YAML objects that provide details about the template
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network configuration
+        Parameters:
+          - EnvironmentName
+          - CostCenter
+          - VPCCIDR
+          - VPC
+          - PublicSubnet1
+          - PublicSubnet2
+      - Label:
+          default: Amazon EC2 configuration
+        Parameters:
+          - KeyPairName
+          - InstanceType
+          - MaxAutoScalingSize
+          - MinAutoScalingSize
+      - Label:
+          default: Application Configuration
+        Parameters:
+          - DomainName
+          - WebApplication
+          - ApplicationName
+          - sitename
+          - S3Bucket
+          - S3KeyPrefix
+          - Build
+          - HealthCheckTarget
+    ParameterLabels:
+      EnvironmentName:
+        default: Environment Name
+      CostCenter:
+        default: CostCenter Name
+      DomainName:
+        default: Domain Name
+      VPCCIDR:
+        default: VPCCIDR
+      VPC:
+        default: VPCID
+      KeyPairName:
+        default: Key Pair for instance Access
+      PublicSubnet1:
+        default: Public Subnet1 
+      PublicSubnet2:
+        default: Public Subnet2
+      CaKeyLength:
+        default: CA Key Length
+      InstanceType:
+        default:  Instance Type
+      MaxAutoScalingSize:
+        default: Max Number of Instances 
+      MinAutoScalingSize:
+        default: Min Number of Instances
+      sitename:
+        default: Website name
+      S3Bucket:
+        default: S3 bucket Name where Source code is kept
+      S3KeyPrefix:
+        default: Application Code Folder Name
+      Build:
+        default: Build number which need to be deployed
+      HealthCheckTarget:
+        default: Healtcheck Target 
+      ApplicationName:
+        default: App pool Name
+      WebApplication:
+        default: Web Application Name
+Mappings: # AMI Images based on the region
+  RegionMap:
+    us-east-1:
+      AMI: ami-04ba83636cdd54819  #custom AMI
+    us-east-2:
+      AMI: ami-07eccf57de71b9b5f  #custom AMI BQECore
+Parameters: # Parameters section to customize your templates. Parameters enable you to input custom values to your template each time you create or update a stack
+  EnvironmentName:
+      Description: An environment name that is prefixed to resource names
+      Type: String
+      Default: demo
+  CostCenter:
+    Description: Enter Cost Center name
+    Type: String
+  DomainName:
+      Description: Enter Domain Name 
+      Type: String
+      Default: demobqecore.local
+  ApplicationName:
+      Description: Enter Application Pool Name like BQECOREWEBAPP , BQECORECOREAPP , BQECOREREPORTAPP
+      Type: String
+      Default: BQECOREWEBAPP
+  WebApplication:
+      Description: Enter Web Application Name like webapp, coreapp, reportapp
+      Type: String
+      Default: webapp
+  sitename:
+      Description: Enter website name
+      Type: String
+      Default: webapp-demo.bqecore.com
+  Build:
+    Description: Build number that is going to be deployed
+    Default: 2
+    Type: Number
+  HealthCheckTarget:
+    Default: '/healthcheck.html'
+    Description: Target used by the ELB to perform the Health Checks
+    Type: String
+  InstanceType:
+    AllowedValues:
+    - t3.small
+    - t3.large
+    - t3a.large
+    - t3a.xlarge
+    - t3.medium
+    - m5.large
+    - m5.xlarge
+    - m5.2xlarge
+    - c5.large
+    - c5.xlarge
+    - c5.2xlarge
+    Default: t3.large
+    Description: Auto Scaling EC2 instance type
+    Type: String
+  KeyPairName:
+    Description: Amazon EC2 Key Pair
+    Type: AWS::EC2::KeyPair::KeyName
+  MaxAutoScalingSize:
+    Default: 2
+    Description: Maximum size of the Auto Scaling Group
+    MinValue: 1
+    Type: Number
+  MinAutoScalingSize:
+    Default: 1
+    Description: Minimum size of the Auto Scaling Group
+    MinValue: 1
+    Type: Number
+  S3Bucket:
+    Description: Bucket to download deployment from
+    Default: bqecoreappcode
+    Type: String
+  VPC:
+    Description: Enter the VpcId
+    Type: AWS::EC2::VPC::Id
+  VPCCIDR:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.200.0.0/16
+    Description: CIDR block for the VPC
+    Type: String
+  PublicSubnet1:
+    Description: the subnet where to Launch the service
+    Type: AWS::EC2::Subnet::Id
+  PublicSubnet2:
+      Type: AWS::EC2::Subnet::Id
+      Description: the subnet where to Launch the service
+  S3KeyPrefix:
+    AllowedPattern: ^[0-9a-zA-Z-/]*$
+    ConstraintDescription: Quick Start key prefix can include numbers, lowercase letters, uppercase letters, hyphens (-), and forward slash (/)
+    Default: BQEWEBAPI/
+    Description: S3 key prefix where application code reside (/)
+    Type: String
+Resources:
+  # CloudWatch Alram for Autoscaling Policy
+  CPUAlarmHigh:
+    Properties:
+      AlarmActions:
+      - Ref: ScaleUpPolicy
+      AlarmDescription: Alarm if CPU too high or metric disappears indicating instance
+        is down
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value:
+          Ref: WebServerASG
+      EvaluationPeriods: '1'
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Period: '60'
+      Statistic: Average
+      Threshold: '60'
+    Type: AWS::CloudWatch::Alarm
+  CPUAlarmLow:
+    Properties:
+      AlarmActions:
+      - Ref: ScaleDownPolicy
+      AlarmDescription: Alarm if CPU too low
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value:
+          Ref: WebServerASG
+      EvaluationPeriods: '1'
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Period: '60'
+      Statistic: Average
+      Threshold: '30'
+    Type: AWS::CloudWatch::Alarm
+  # EC2 instance profile with role attached to communicate with other AWS services
+  InstanceProfile:
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: InstanceRole
+    Type: AWS::IAM::InstanceProfile
+  InstanceRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+      Path: "/"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+    Type: AWS::IAM::Role
+  RolePolicies:
+    Properties:
+      PolicyDocument:
+        Statement:
+        - Action:
+          - s3:GetObject
+          Effect: Allow
+          Resource:
+          - Fn::Join:
+            - ''
+            - - 'arn:aws:s3:::'
+              - Ref: S3Bucket
+              - "/*"
+      PolicyName: S3Download
+      Roles:
+      - Ref: InstanceRole
+    Type: AWS::IAM::Policy
+  # Autoscaling Scale up and Scale down Policy
+  ScaleDownPolicy:
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName:
+        Ref: WebServerASG
+      Cooldown: '300'
+      ScalingAdjustment: "-1"
+    Type: AWS::AutoScaling::ScalingPolicy
+  ScaleUpPolicy:
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName:
+        Ref: WebServerASG
+      Cooldown: '300'
+      ScalingAdjustment: '2'
+    Type: AWS::AutoScaling::ScalingPolicy
+  # Security group 
+  SecurityGroupRDP:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+    #Name: !Sub '${EnvironmentName}-${AWS::StackName}-SecurityGroupRDP'
+      GroupDescription: Allow RDP to client host
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        FromPort: '3389'
+        IpProtocol: tcp
+        ToPort: '3389'
+      - CidrIp: !Ref VPCCIDR
+        IpProtocol: -1
+      VpcId: !Ref VPC
+      Tags:
+        -
+          Key: "Environment"
+          Value: !Sub ${EnvironmentName}
+        -
+          Key: "Name"
+          Value: !Sub '${EnvironmentName}-${AWS::StackName}-RDPSG'
+        - Key: CostCenter
+          Value: !Ref CostCenter
+  SecurityGroupWeb:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      #Name: !Sub '${EnvironmentName}-${AWS::StackName}-SecurityGroupWeb'
+      GroupDescription: Allow http to client host
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        FromPort: '80'
+        IpProtocol: tcp
+        ToPort: '80'
+      - CidrIp: 0.0.0.0/0
+        FromPort: '443'
+        IpProtocol: tcp
+        ToPort: '443'
+      VpcId: !Ref VPC
+      Tags:
+        -
+          Key: "Environment"
+          Value: !Sub ${EnvironmentName}
+        -
+          Key: "Name"
+          Value: !Sub '${EnvironmentName}-${AWS::StackName}-WebSG'
+        - Key: CostCenter
+          Value: !Ref CostCenter
+  # Autoscaling group
+  WebServerASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+        MinSize: !Ref MinAutoScalingSize
+        MaxSize: !Ref MaxAutoScalingSize
+        DesiredCapacity: '1'
+        LaunchTemplate:
+          LaunchTemplateId: !Ref WebServerLT
+          Version: !Sub ${WebServerLT.LatestVersionNumber}
+        VPCZoneIdentifier:
+         - !Ref PublicSubnet1
+        # - !Ref PublicSubnet2
+        TargetGroupARNs:
+         - !Ref TargetGroup
+        Tags:
+          - Key: Name
+            Value: !Sub ${AWS::StackName}
+            PropagateAtLaunch: true
+          - Key: CostCenter
+            Value: !Ref CostCenter
+            PropagateAtLaunch: true
+  # Load balancer for application
+  WebServerELB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${EnvironmentName}-${AWS::StackName}-NLB'
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Type: network
+      Tags:
+        -
+          Key: "Environment"
+          Value: !Sub ${EnvironmentName}
+        -
+          Key: "Name"
+          Value: !Sub ${AWS::StackName}-NLB
+        - Key: CostCenter
+          Value: !Ref CostCenter
+  # Load balancer Rule 
+  LoadBalancerListener: # Port 80 Listener for ALB
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref WebServerELB
+      Port: 443
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: TargetGroup
+  # TargetGroup Creation
+  TargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: !Sub '${EnvironmentName}-${AWS::StackName}-tg'
+      Port: 443
+      Protocol: TCP
+      VpcId: !Ref VPC
+      HealthCheckEnabled: True
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPort: 443
+      HealthCheckPath: !Ref HealthCheckTarget
+      HealthCheckProtocol: HTTPS
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 3
+      TargetType: instance
+      Tags:
+        -
+          Key: "Environment"
+          Value: !Sub ${EnvironmentName}
+        -
+          Key: "Name"
+          Value: !Sub ${AWS::StackName}-tg
+        - Key: CostCenter
+          Value: !Ref CostCenter
+  # Launch tempalte for Application
+  WebServerLT:
+    Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      AWS::CloudFormation::Authentication:
+        default:
+          buckets:
+          - Ref: S3Bucket
+          roleName:
+            Ref: InstanceRole
+          type: s3
+      AWS::CloudFormation::Init:
+        configSets:
+          setup:
+          - setupCfn
+          - deploySite
+          - scripts
+          - Certificate
+          deploy:
+          - scripts
+          - stopSite
+          - deploySite
+          - startSite
+        setupCfn:
+          files:
+            c:\cfn\cfn-hup.conf:
+              content:
+                Fn::Join:
+                - ''
+                - - "[main]\n"
+                  - stack=
+                  - Ref: AWS::StackId
+                  - "\n"
+                  - region=
+                  - Ref: AWS::Region
+                  - "\n"
+                  - interval=1
+            c:\cfn\hooks.d\cfn-auto-reloader.conf:
+              content:
+                Fn::Join:
+                - ''
+                - - "[cfn-auto-reloader-hook]\n"
+                  - 'triggers=post.update
+
+                    '
+                  - 'path=Resources.WebServerLT.Metadata.AWS::CloudFormation::Init
+
+                    '
+                  - 'action=cfn-init.exe -v -c deploy -s '
+                  - Ref: AWS::StackId
+                  - " -r WebServerLT"
+                  - " --region "
+                  - Ref: AWS::Region
+                  - "\n"
+          services:
+            windows:
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                - c:\cfn\cfn-hup.conf
+                - c:\cfn\hooks.d\cfn-auto-reloader.conf
+        stopSite:
+          commands:
+            1_stop_site:
+              command: iisreset /stop
+        startSite:
+          commands:
+            1_start_site:
+              command: iisreset /start
+        deploySite:
+          sources:
+            c:\:
+              Fn::Join:
+              - ''
+              - - https://
+                - Ref: S3Bucket
+                - ".s3.us-east-2.amazonaws.com/"
+                - Ref: S3KeyPrefix
+                - Ref: Build
+                - ".zip"
+        Certificate:
+          commands:
+            1_import_certificate:
+              command: powershell -Command "C:\\Installers\\v2.bqecore.com-ssl\\Import-pfx-certificate-from-location.ps1 
+        scripts:
+          sources:
+            c:\Installers\:
+              Fn::Join:
+              - ''
+              - - https://
+                - Ref: S3Bucket
+                - ".s3.us-east-2.amazonaws.com/"
+                - "v2.bqecore.com-ssl.zip"
+      Build:
+        Ref: Build
+    Properties:
+      LaunchTemplateData:
+        ImageId:
+          Fn::FindInMap:
+          - RegionMap
+          - !Ref AWS::Region
+          - AMI
+        SecurityGroupIds:
+          - Ref: SecurityGroupWeb
+          - Ref: SecurityGroupRDP
+        InstanceType:
+          Ref: InstanceType
+        IamInstanceProfile:
+          Name: !Ref InstanceProfile
+        KeyName:
+          Ref: KeyPairName
+        UserData:
+          Fn::Base64: !Sub |
+            <powershell>
+            # Create the Installer folder in C drive 
+            New-Item -ItemType Directory -Force -Path C:\\Installers
+            remove-website -name 'Default Web Site'
+            New-WebAppPool -Name ${ApplicationName}
+            Set-ItemProperty -Path IIS:\AppPools\${ApplicationName} managedRuntimeVersion "v4.0"
+            New-WebAppPool -Name ${sitename}
+            Set-ItemProperty -Path IIS:\AppPools\${sitename} managedRuntimeVersion "v4.0"
+            new-website -name ${sitename} -port 80 -physicalpath C:\BQECORE-SYSTEM -ApplicationPool ${sitename} -force
+            cfn-init.exe -v -c setup -s ${AWS::StackName} -r WebServerLT --region ${AWS::Region}
+            set-location C:\Installers\v2.bqecore.com-ssl
+            $Port =443
+            $newCert=Get-ChildItem -Path Cert:\LocalMachine\My\B108070168BB3B00BE010234AB7876B373FA0545
+            $binding = New-WebBinding -Name ${sitename} -Port $Port -Protocol "https"
+            $binding = Get-WebBinding -Name ${sitename} -Protocol "https"
+            $binding.AddSslCertificate($newCert.GetCertHashString(), "my")
+            New-WebApplication -Name ${WebApplication} -Site ${sitename} -PhysicalPath C:\BQECORE-SYSTEM\${ApplicationName} -ApplicationPool ${ApplicationName}
+            $instanceID = invoke-restmethod -uri http://169.254.169.254/latest/meta-data/instance-id
+            $username = "stackadmin"
+            $password = "Core@2!" | ConvertTo-SecureString -AsPlainText -Force
+            $cred = New-Object -typename System.Management.Automation.PSCredential($username, $password)
+            $InstanceName = $instanceID.substring(0,12)
+            Rename-Computer -NewName $InstanceName -Force
+            Start-Sleep -s 5
+            tzutil /s "Pacific Standard Time"
+            Add-Computer -DomainName ${DomainName} -Options JoinWithNewName,AccountCreate -Credential $cred -Force -Restart -erroraction 'stop'
+            </powershell>
