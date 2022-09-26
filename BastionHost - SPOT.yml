@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Bastion Host for RDP purpose
+Metadata: # Metadata section to include arbitrary JSON or YAML objects that provide details about the template
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network configuration
+        Parameters:
+          - EnvironmentName
+          - CostCenter
+          - VPCCIDR
+          - VPC
+          - PublicSubnet1
+      - Label:
+          default: Amazon EC2 configuration
+        Parameters:
+          - KeyPairName
+          - InstanceType
+    ParameterLabels:
+      EnvironmentName:
+        default: Environment Name
+      CostCenter:
+        default: CostCenter Name
+      VPCCIDR:
+        default: VPCCIDR
+      VPC:
+        default: VPCID
+      KeyPairName:
+        default: Key Pair for instance Access
+      PublicSubnet1:
+        default: Public Subnet1 
+      InstanceType:
+        default:  Instance Type
+Parameters: # Parameters section to customize your templates. Parameters enable you to input custom values to your template each time you create or update a stack
+  EnvironmentName:
+      Description: An environment name that is prefixed to resource names
+      Type: String
+      Default: demo
+  CostCenter:
+      Description: An environment name that is prefixed to resource names
+      Type: String
+      Default: Sales
+  InstanceType:
+    AllowedValues:
+    - t3.small
+    - t3.large
+    Default: t3.large
+    Description: Auto Scaling EC2 instance type
+    Type: String
+  KeyPairName:
+    Description: Amazon EC2 Key Pair
+    Type: AWS::EC2::KeyPair::KeyName
+  VPC:
+    Description: Enter the VpcId
+    Type: AWS::EC2::VPC::Id
+  VPCCIDR:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.200.0.0/16
+    Description: CIDR block for the VPC
+    Type: String
+  PublicSubnet1:
+    Description: the subnet where to Launch the service
+    Type: AWS::EC2::Subnet::Id
+  ImageId:
+    Default: /aws/service/ami-windows-latest/Windows_Server-2012-R2_RTM-English-64Bit-Base
+    Description: System Manager parameter value for latest Windows Server AMI
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+
+Resources:
+  InstanceProfile:
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: InstanceRole
+    Type: AWS::IAM::InstanceProfile
+  InstanceRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+      Path: "/"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+    Type: AWS::IAM::Role
+  SecurityGroupRDP:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow RDP to client host
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        FromPort: '3389'
+        IpProtocol: tcp
+        ToPort: '3389'
+      - CidrIp: !Ref VPCCIDR
+        IpProtocol: -1
+      VpcId: !Ref VPC
+      Tags:
+        -
+          Key: "Environment"
+          Value: !Sub ${EnvironmentName}
+        -
+          Key: "Name"
+          Value: !Sub '${EnvironmentName}-${AWS::StackName}-RDPSG'
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId:
+          Ref: LaunchTemplate
+        Version:
+          Fn::GetAtt: LaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+      MinSize: 0
+      MaxSize: 1
+      DesiredCapacity: 1
+      Tags:
+         - Key: Name
+           Value: !Sub ${AWS::StackName}
+           PropagateAtLaunch: true
+         - Key: CostCenter
+           Value: !Ref CostCenter
+           PropagateAtLaunch: true
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId:
+          Ref: ImageId
+        SecurityGroupIds:
+          - Ref: SecurityGroupRDP
+        InstanceType:
+          Ref: InstanceType
+        IamInstanceProfile:
+          Name: !Ref InstanceProfile
+        KeyName:
+          Ref: KeyPairName
+        InstanceMarketOptions:
+          MarketType: spot
+          SpotOptions:
+            SpotInstanceType: one-time
+            InstanceInterruptionBehavior: terminate
