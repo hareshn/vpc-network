@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# Get a list of instance IDs with names starting with "cwcmd"
+instance_ids=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=cwcmd*" --query "Reservations[].Instances[].InstanceId" --output text)
+
+# Loop through instance IDs and tag volumes
+for instance_id in $instance_ids; do
+    volume_ids=$(aws ec2 describe-volumes --filters "Name=attachment.instance-id,Values=$instance_id" --query "Volumes[].VolumeId" --output text)
+    
+    for volume_id in $volume_ids; do
+        aws ec2 create-tags --resources $volume_id --tags Key=InstanceID,Value=$instance_id
+    done
+done
