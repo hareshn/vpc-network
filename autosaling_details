@@ -1,0 +1,108 @@
+import boto3
+import csv
+
+def get_autoscaling_groups(region='us-east-1'):
+    client = boto3.client('autoscaling', region_name=region)
+    paginator = client.get_paginator('describe_auto_scaling_groups')
+    autoscaling_groups = []
+
+    for page in paginator.paginate():
+        autoscaling_groups.extend(page['AutoScalingGroups'])
+
+    return autoscaling_groups
+
+def get_scaling_policies(region='us-east-1'):
+    client = boto3.client('autoscaling', region_name=region)
+    paginator = client.get_paginator('describe_policies')
+    scaling_policies = []
+
+    for page in paginator.paginate():
+        scaling_policies.extend(page['ScalingPolicies'])
+
+    return scaling_policies
+
+def get_alarm_details(alarm_names, region='us-east-1'):
+    cloudwatch_client = boto3.client('cloudwatch', region_name=region)
+    alarm_details = {}
+    
+    # Split alarm names into batches of 100
+    for i in range(0, len(alarm_names), 100):
+        batch = alarm_names[i:i+100]
+        alarms = cloudwatch_client.describe_alarms(AlarmNames=batch)['MetricAlarms']
+        
+        for alarm in alarms:
+            alarm_details[alarm['AlarmName']] = {
+                'MetricName': alarm['MetricName'],
+                'Threshold': alarm['Threshold'],
+                'EvaluationPeriods': alarm['EvaluationPeriods'],
+                'ComparisonOperator': alarm['ComparisonOperator'],
+                'Dimensions': alarm['Dimensions']
+            }
+
+    return alarm_details
+
+def export_to_csv(autoscaling_groups, scaling_policies, alarm_details, filename='autoscaling_groups.csv'):
+    with open(filename, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        header = ['AutoScalingGroupName', 'MinSize', 'MaxSize', 'PolicyName', 'ScalingType', 'Status', 
+                  'AlarmName', 'MetricName', 'Threshold', 'EvaluationPeriods', 'ComparisonOperator', 
+                  'Dimensions', 'Action', 'Cooldown']
+
+        writer.writerow(header)
+
+        # Create a dictionary to map Auto Scaling group names to their MinSize and MaxSize
+        asg_sizes = {asg['AutoScalingGroupName']: (asg['MinSize'], asg['MaxSize']) for asg in autoscaling_groups}
+
+        for policy in scaling_policies:
+            asg_name = policy['AutoScalingGroupName']
+            min_size, max_size = asg_sizes.get(asg_name, ('N/A', 'N/A'))  # Fetch MinSize and MaxSize
+            alarm_name = policy['Alarms'][0]['AlarmName'] if policy['Alarms'] else None
+            alarm = alarm_details.get(alarm_name, {})
+            
+            # Determine the action based on the policy type
+            action = ''
+            if policy['PolicyType'] == 'SimpleScaling':
+                scaling_adjustment = policy.get('ScalingAdjustment')
+                action = (f"Remove {abs(scaling_adjustment)} capacity units" if scaling_adjustment < 0 
+                          else f"Add {scaling_adjustment} capacity units")
+            elif policy['PolicyType'] == 'StepScaling':
+                action = "Step Scaling Policy"  # Customize as needed
+            elif policy['PolicyType'] == 'TargetTrackingScaling':
+                action = f"Target Tracking: {policy.get('TargetTrackingConfiguration', {}).get('PredefinedMetricSpecification', {}).get('PredefinedMetricType')}"
+
+            row = [
+                asg_name,
+                min_size,  # MinSize of the Auto Scaling group
+                max_size,  # MaxSize of the Auto Scaling group
+                policy['PolicyName'],
+                policy['PolicyType'],
+                'Enabled' if policy['Enabled'] else 'Disabled',
+                alarm_name,
+                alarm.get('MetricName'),
+                alarm.get('Threshold'),
+                alarm.get('EvaluationPeriods'),
+                alarm.get('ComparisonOperator'),
+                '; '.join([f"{dim['Name']}={dim['Value']}" for dim in alarm.get('Dimensions', [])]),
+                action,
+                policy.get('Cooldown', 'N/A')  # Not all policies have a Cooldown period
+            ]
+            writer.writerow(row)
+
+    print(f"Data exported to {filename}")
+
+def main():
+    region = 'us-east-1'
+    autoscaling_groups = get_autoscaling_groups(region)
+    scaling_policies = get_scaling_policies(region)
+    
+    # Collect all unique alarm names associated with scaling policies
+    alarm_names = [alarm['AlarmName'] for policy in scaling_policies for alarm in policy['Alarms'] if 'AlarmName' in alarm]
+    
+    # Get alarm details
+    alarm_details = get_alarm_details(alarm_names, region)
+    
+    # Export to CSV
+    export_to_csv(autoscaling_groups, scaling_policies, alarm_details)
+
+if __name__ == "__main__":
+    main()
